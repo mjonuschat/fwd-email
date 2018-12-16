@@ -1,0 +1,10 @@
+aiodns==1.1.1
+aiosmtpd==1.2
+aiosmtplib==1.0.3
+asyncache==0.1.1
+Click==7.0
+disposable-email-domains==0.0.39
+flanker==0.9.0
+fqdn==1.1.0
+idna==2.8
+pydnsbl==0.6.2

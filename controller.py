@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from aiosmtpd.controller import Controller
-from aiosmtpd.smtp import SMTP
+
+from smtp import SMTP
 
 
 class ForwardController(Controller):

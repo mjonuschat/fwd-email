@@ -40,6 +40,26 @@ class ForwardHandler:
 
     SANITIZE_HEADER_FIELDS = ["dkim-signature", "x-google-dkim-signature"]
 
+    def __init__(self):
+        """
+        Initializer
+        """
+        self._loop = asyncio.get_event_loop()
+
+    @property
+    def loop(self) -> asyncio.events.AbstractEventLoop:
+        """
+        Returns the currently running asyncio loop.
+        """
+        return self._loop
+
+    @loop.setter
+    def loop(self, loop: asyncio.events.AbstractEventLoop):
+        """
+        Set the currently running asyncio loop from the controller.
+        """
+        self._loop = loop
+
     async def handle_HELO(
         self, _server: SMTP, session: Session, _envelope: Envelope, hostname: str
     ) -> str:
@@ -193,10 +213,10 @@ class ForwardHandler:
             print("Sender:", mail_from)
             result = await asyncio.gather(
                 *[
-                    self._send_message(mail_from, rcpt, msg, server.loop)
+                    self._send_message(mail_from, rcpt, msg)
                     for rcpt in set.union(*ChainMap(*envelope.rcpt_tos).values())
                 ],
-                loop=server.loop,
+                loop=self.loop,
             )
             print(result)
         except SMTPResponseException as e:
@@ -207,11 +227,7 @@ class ForwardHandler:
         return "250 OK"
 
     async def _send_message(
-        self,
-        sender: str,
-        rcpt: EmailAddress,
-        msg: MimePart,
-        loop: asyncio.AbstractEventLoop,
+        self, sender: str, rcpt: EmailAddress, msg: MimePart
     ) -> str:
         """
         Send an email over SMTP.
@@ -221,7 +237,7 @@ class ForwardHandler:
             rcpt: The recipient ofthe message.
             msg: The message to be sent
         """
-        smtp_servers = await self._get_mx_records(domain=rcpt.hostname, loop=loop)
+        smtp_servers = await self._get_mx_records(domain=rcpt.hostname)
         if not smtp_servers:
             raise SMTPResponseException(
                 code=451, message="Internal error, try again later"
@@ -232,7 +248,7 @@ class ForwardHandler:
         for hostname in smtp_servers:
             try:
                 transport = SMTPClient(
-                    hostname=hostname, port=25, use_tls=False, loop=loop
+                    hostname=hostname, port=25, use_tls=False, loop=self.loop
                 )
                 await transport.connect()
 
@@ -279,9 +295,7 @@ class ForwardHandler:
         # TODO: Log the result print(result)
         return result.blacklisted and ip not in ["127.0.0.1", "::1"]
 
-    async def _get_mx_records(
-        self, domain: str, loop: asyncio.AbstractEventLoop
-    ) -> List[str]:
+    async def _get_mx_records(self, domain: str) -> List[str]:
         """
         Helper to get the MX records for a domain, sorted by priority.
 
@@ -291,7 +305,7 @@ class ForwardHandler:
         Returns:
             List of mail exchangers sorted by priority.
         """
-        resolver = DNSResolver(loop=loop)
+        resolver = DNSResolver(loop=self.loop)
         return [
             r.host
             for r in sorted(

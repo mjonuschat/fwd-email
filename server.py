@@ -17,7 +17,7 @@ async def _server(hostname: str = "*", port: int = 25) -> None:
 
 @click.command()
 @click.option(
-    "--hostname", default="*", type=str, help="The hostname/IP address to listen on"
+    "--hostname", default="::1", type=str, help="The hostname/IP address to listen on"
 )
 @click.option("--port", default=25, type=int, help="The TCP port to listen on")
 def server(hostname: str = "::1", port: int = 25) -> None:

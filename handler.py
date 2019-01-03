@@ -3,7 +3,9 @@ import asyncio
 from collections import ChainMap
 from typing import Dict, List, Optional, Set
 
+import dkim
 import idna
+import spf
 from aiodns import DNSResolver
 from aiosmtpd.smtp import SMTP, Envelope, Session
 from aiosmtplib.errors import (
@@ -15,6 +17,7 @@ from aiosmtplib.errors import (
 )
 from aiosmtplib.smtp import SMTP as SMTPClient
 from asyncache import cached
+from blacklist import blocklist as blacklisted_domains
 from cachetools import TTLCache
 from disposable_email_domains import blocklist as disposable_domains
 from flanker import mime
@@ -25,8 +28,6 @@ from flanker.mime.message.part import MimePart
 from fqdn import FQDN
 from pydnsbl import DNSBLChecker
 from pydnsbl.checker import DNSBLResult
-
-from blacklist import blocklist as blacklisted_domains
 
 
 class ForwardHandler:
@@ -133,8 +134,6 @@ class ForwardHandler:
         Returns:
 
         """
-        # TODO: SPF Validation
-
         envelope.mail_from = address
         envelope.mail_options.extend(mail_options)
         return "250 OK"
@@ -175,14 +174,14 @@ class ForwardHandler:
         return "250 OK"
 
     async def handle_DATA(
-        self, server: SMTP, _session: Session, envelope: Envelope
+        self, server: SMTP, session: Session, envelope: Envelope
     ) -> str:
         """
         Handle DATA commands
 
         Args:
             server:
-            _session:
+            session:
             envelope:
 
         Returns:
@@ -195,15 +194,6 @@ class ForwardHandler:
         # TODO: Proper logging
         print("Forwarding to", envelope.rcpt_tos)
 
-        # TODO: DKIM validation
-        # TODO: SPAMD integration: aiospamc
-
-        # Remove headers conflicting with DKIM re-signing
-        for field in self.SANITIZE_HEADER_FIELDS:
-            if field not in headers:
-                continue
-            del headers[field]
-
         try:
             mail_from = ""
             sender: EmailAddress = parse_address(envelope.mail_from)
@@ -211,6 +201,36 @@ class ForwardHandler:
                 mail_from = sender.address
 
             print("Sender:", mail_from)
+
+            # SPF Validation
+            spf_result, _ = spf.check2(
+                i=session.peer[0], s=mail_from, h=session.host_name
+            )
+
+            # DKIM validation
+            dkim_ok = dkim.verify(message=msg.to_string().encode("utf-8"))
+
+            print(("SPF", spf_result, "DKIM", dkim_ok))
+
+            if not dkim_ok and spf_result in ["none", "fail", "permerror"]:
+                raise SMTPResponseException(
+                    code=550,
+                    message=(
+                        "Please ensure you have either SPF or DKIM set up "
+                        "for the domain you're sending from."
+                    ),
+                )
+
+            # TODO: SPAMD integration: aiospamc
+
+            # Remove headers conflicting with DKIM re-signing
+            for field in self.SANITIZE_HEADER_FIELDS:
+                if field not in headers:
+                    continue
+                del headers[field]
+
+            # TODO: DMARC support
+
             result = await asyncio.gather(
                 *[
                     self._send_message(mail_from, rcpt, msg)
@@ -221,8 +241,6 @@ class ForwardHandler:
             print(result)
         except SMTPResponseException as e:
             return f"{e.code} {e.message}"
-
-        # TODO: DMARC support
 
         return "250 OK"
 

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 from aiosmtpd.controller import Controller
-
 from smtp import SMTP
 
 

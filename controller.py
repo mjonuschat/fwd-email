@@ -9,6 +9,7 @@ class ForwardController(Controller):
     """
 
     DATA_SIZE_DEFAULT = 25 * 1024 * 1024  # 25MiB
+    IDENT = "fwd-email"
 
     def factory(self) -> SMTP:
         """
@@ -18,4 +19,5 @@ class ForwardController(Controller):
             handler=self.handler,
             data_size_limit=self.DATA_SIZE_DEFAULT,
             enable_SMTPUTF8=self.enable_SMTPUTF8,
+            ident=self.IDENT,
         )

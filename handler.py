@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
 from collections import ChainMap
+from logging import Logger, getLogger
 from typing import Dict, List, Optional, Set
 
 import dkim
@@ -46,6 +47,14 @@ class ForwardHandler:
         Initializer
         """
         self._loop = asyncio.get_event_loop()
+        self._logger = getLogger("mail.log")
+
+    @property
+    def log(self) -> Logger:
+        """
+        Returns the logger instance.
+        """
+        return self._logger
 
     @property
     def loop(self) -> asyncio.events.AbstractEventLoop:
@@ -78,10 +87,12 @@ class ForwardHandler:
         """
         fqdn = FQDN(fqdn=hostname)
         if not fqdn.is_valid:
+            self.log.debug("%s is not a valid FQDN", hostname)
             return f"550 {hostname} is not a FQDN"
 
         is_blacklisted = await self._check_dnsbl(ip=session.peer[0])
         if is_blacklisted:
+            self.log.debug("%s is listed in one or more DNSBL", session.peer[0])
             return f"550 {session.peer[0]} is not welcome here"
 
         session.host_name = fqdn.relative
@@ -104,10 +115,12 @@ class ForwardHandler:
         """
         fqdn = FQDN(fqdn=hostname)
         if not fqdn.is_valid:
+            self.log.debug("%s is not a valid FQDN", hostname)
             return f"550 {hostname} is not a FQDN"
 
         is_blacklisted = await self._check_dnsbl(ip=session.peer[0])
         if is_blacklisted:
+            self.log.debug("%s is listed in one or more DNSBL", session.peer[0])
             return f"550 {session.peer[0]} is not welcome here"
 
         session.host_name = fqdn.relative
@@ -161,6 +174,7 @@ class ForwardHandler:
         """
         rcpt: EmailAddress = parse_address(address)
         if rcpt is None:
+            self.log.debug("Could not parse %s", address)
             return f"550 {address} could not be parsed"
 
         try:
@@ -169,18 +183,19 @@ class ForwardHandler:
             envelope.rcpt_tos.append({address: destinations})
             envelope.rcpt_options.extend(rcpt_options)
         except SMTPResponseException as e:
+            self.log.exception("Error handling RCPT TO command", e.message)
             return f"{e.code} {e.message}"
 
         return "250 OK"
 
     async def handle_DATA(
-        self, server: SMTP, session: Session, envelope: Envelope
+        self, _server: SMTP, session: Session, envelope: Envelope
     ) -> str:
         """
         Handle DATA commands
 
         Args:
-            server:
+            _server:
             session:
             envelope:
 
@@ -191,8 +206,7 @@ class ForwardHandler:
         msg: MimePart = mime.from_string(envelope.content)
         headers: MimeHeaders = msg.headers
 
-        # TODO: Proper logging
-        print("Forwarding to", envelope.rcpt_tos)
+        self.log.info("Forwarding message to %s", envelope.rcpt_tos)
 
         try:
             mail_from = ""
@@ -200,19 +214,27 @@ class ForwardHandler:
             if sender is not None:
                 mail_from = sender.address
 
-            print("Sender:", mail_from)
+            self.log.info("Using sender information: %s", mail_from)
 
             # SPF Validation
-            spf_result, _ = spf.check2(
+            spf_result, spf_explanation = spf.check2(
                 i=session.peer[0], s=mail_from, h=session.host_name
+            )
+            self.log.debug(
+                "SPF result for %s/%s/%s: %s (%s)",
+                session.peer[0],
+                mail_from,
+                session.host_name,
+                spf_result,
+                spf_explanation,
             )
 
             # DKIM validation
             dkim_ok = dkim.verify(message=msg.to_string().encode("utf-8"))
-
-            print(("SPF", spf_result, "DKIM", dkim_ok))
+            self.log.debug("DKIM validation result: %s", str(dkim_ok))
 
             if not dkim_ok and spf_result in ["none", "fail", "permerror"]:
+                self.log.info("Rejecting message, neither SPF nor DKIM configured")
                 raise SMTPResponseException(
                     code=550,
                     message=(
@@ -227,6 +249,7 @@ class ForwardHandler:
             for field in self.SANITIZE_HEADER_FIELDS:
                 if field not in headers:
                     continue
+                self.log.debug("Removing header %s before forwarding message", field)
                 del headers[field]
 
             # TODO: DMARC support
@@ -240,8 +263,10 @@ class ForwardHandler:
             )
             print(result)
         except SMTPResponseException as e:
+            self.log.exception("Error forwarding message: %s %s", e.code, e.message)
             return f"{e.code} {e.message}"
 
+        self.log.info("Message forwarded to %s", envelope.rcpt_tos)
         return "250 OK"
 
     async def _send_message(
@@ -257,6 +282,7 @@ class ForwardHandler:
         """
         smtp_servers = await self._get_mx_records(domain=rcpt.hostname)
         if not smtp_servers:
+            self.log.debug("Could not resolve mail exchangers for %s", rcpt.hostname)
             raise SMTPResponseException(
                 code=451, message="Internal error, try again later"
             )
@@ -269,22 +295,37 @@ class ForwardHandler:
                     hostname=hostname, port=25, use_tls=False, loop=self.loop
                 )
                 await transport.connect()
+                self.log.debug("SMTP connection to %s established", hostname)
 
                 # Upgrade TLS encrypted connection
                 if transport.supports_extension("starttls"):
                     await transport.starttls()
+                    self.log.debug(
+                        "SMTP connection %s upgraded using STARTTLS", hostname
+                    )
 
                 recipient_errors, response_message = await transport.sendmail(
                     sender=sender, recipients=[rcpt.address], message=msg.to_string()
                 )
                 success = not recipient_errors
+                if not success:
+                    self.log.warning(
+                        "Failed sending mail for %s: %s (%s)",
+                        rcpt.address,
+                        recipient_errors,
+                        response_message,
+                    )
                 break
             except (SMTPServerDisconnected, SMTPConnectError, SMTPTimeoutError) as e:
-                print(f"Trying next mail exchanger for {rcpt.address}", e)
-                # Try the next server
+                self.log.warning(
+                    "SMTP connection to %s failed for %s",
+                    hostname,
+                    rcpt.address,
+                    exc_info=True,
+                )
                 continue
             except SMTPException as e:
-                print(f"Hard failure for {rcpt.address}", e)
+                self.log.exception("SMTP failure forwarding to %s", rcpt.address)
                 break
 
         if not success:
@@ -307,10 +348,10 @@ class ForwardHandler:
         try:
             result: DNSBLResult = await dnsbl._check_ip(addr=ip)
         except ValueError:
-            # TODO: Log what went wrong (IPv6?)
+            self.log.exception("Error checking DNSBL for %s", ip)
             result = DNSBLResult(addr=ip, results=[])
 
-        # TODO: Log the result print(result)
+        self.log.info("DNSBL result for %s: %s", ip, result)
         return result.blacklisted and ip not in ["127.0.0.1", "::1"]
 
     async def _get_mx_records(self, domain: str) -> List[str]:
@@ -374,21 +415,25 @@ class ForwardHandler:
             The domain part of a recipient address.
         """
         if not rcpt.hostname:
+            self.log.debug("%s is not a valid recipient", rcpt.address)
             raise SMTPResponseException(code=550, message=f"{rcpt.address} is invalid")
 
         domain = FQDN(fqdn=idna.decode(rcpt.hostname))
 
         if not domain.is_valid:
+            self.log.debug("%s is not a FQDN", domain.relative)
             raise SMTPResponseException(
                 code=550, message=f"{domain.relative} is not a FQDN"
             )
 
         if domain.relative in blacklisted_domains:
+            self.log.debug("%s is blacklisted", domain.relative)
             raise SMTPResponseException(
                 code=550, message=f"{domain.relative} is not permitted"
             )
 
         if domain.relative in disposable_domains:
+            self.log.debug("%s is a disposable email address", domain.relative)
             raise SMTPResponseException(
                 code=550, message=f"Disposable email addresses are not permitted"
             )
@@ -446,6 +491,7 @@ class ForwardHandler:
                 for addr in forwarding_addresses
             }
 
+        self.log.info("Forwarding mail for %s to %s", rcpt, forwarding_addresses)
         return forwarding_addresses
 
     def _parse_destination(self, dest: str) -> Set[EmailAddress]:

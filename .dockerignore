@@ -1,0 +1,9 @@
+/.env
+/.envrc
+/.git/
+/.idea/
+/.pyre/
+/.pytest_cache/
+/.mypy_cache/
+/.venv/
+/venv/

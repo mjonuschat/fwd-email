@@ -4,6 +4,7 @@ from collections import ChainMap
 from logging import Logger, getLogger
 from typing import Dict, List, Optional, Set
 
+import checkdmarc
 import dkim
 import idna
 import spf
@@ -18,7 +19,6 @@ from aiosmtplib.errors import (
 )
 from aiosmtplib.smtp import SMTP as SMTPClient
 from asyncache import cached
-from blacklist import blocklist as blacklisted_domains
 from cachetools import TTLCache
 from disposable_email_domains import blocklist as disposable_domains
 from flanker import mime
@@ -29,6 +29,8 @@ from flanker.mime.message.part import MimePart
 from fqdn import FQDN
 from pydnsbl import DNSBLChecker
 from pydnsbl.checker import DNSBLResult
+
+from blacklist import blocklist as blacklisted_domains
 
 
 class ForwardHandler:
@@ -214,8 +216,6 @@ class ForwardHandler:
             if sender is not None:
                 mail_from = sender.address
 
-            self.log.info("Using sender information: %s", mail_from)
-
             # SPF Validation
             spf_result, spf_explanation = spf.check2(
                 i=session.peer[0], s=mail_from, h=session.host_name
@@ -243,6 +243,29 @@ class ForwardHandler:
                     ),
                 )
 
+            # Check DMARC records
+            if sender:
+                dmarc_info = checkdmarc.check_domains(domains=[sender.hostname])
+                if dmarc_info["dmarc"]["valid"]:
+                    tags = dmarc_info["dmarc"]["tags"]
+                    if tags["p"]["value"] in ["quarantine", "reject"]:
+                        self.log.debug(
+                            "DMARC request quarantine/reject, using friendly from"
+                        )
+                        orig_from: EmailAddress = parse_address(headers["from"])
+
+                        # TODO: Make configurable
+                        fwd_from = EmailAddress(
+                            raw_display_name=orig_from.display_name,
+                            raw_addr_spec="no-reply@mojocode.de",
+                        )
+                        if "reply-to" not in headers:
+                            headers["reply-to"] = headers["from"]
+                        headers["from"] = fwd_from
+                        mail_from = fwd_from.address
+
+            self.log.info("Using sender information: %s", mail_from)
+
             # TODO: SPAMD integration: aiospamc
 
             # Remove headers conflicting with DKIM re-signing
@@ -252,8 +275,6 @@ class ForwardHandler:
                 self.log.debug("Removing header %s before forwarding message", field)
                 del headers[field]
 
-            # TODO: DMARC support
-
             result = await asyncio.gather(
                 *[
                     self._send_message(mail_from, rcpt, msg)
@@ -261,7 +282,7 @@ class ForwardHandler:
                 ],
                 loop=self.loop,
             )
-            print(result)
+            self.log.debug("SMTP-FWD Result: %s", result)
         except SMTPResponseException as e:
             self.log.exception("Error forwarding message: %s %s", e.code, e.message)
             return f"{e.code} {e.message}"

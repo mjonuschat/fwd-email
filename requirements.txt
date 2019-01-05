@@ -2,6 +2,7 @@ aiodns==1.1.1
 aiosmtpd==1.2
 aiosmtplib==1.0.3
 asyncache==0.1.1
+checkdmarc==3.0.2
 Click==7.0
 disposable-email-domains==0.0.39
 dkimpy==0.9.1

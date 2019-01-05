@@ -28,7 +28,7 @@ from flanker.addresslib.address import parse as parse_address
 from flanker.mime.message.headers import MimeHeaders
 from flanker.mime.message.part import MimePart
 from fqdn import FQDN
-from pydnsbl import DNSBLChecker
+from pydnsbl import DNSBLChecker, providers
 from pydnsbl.checker import DNSBLResult
 
 from blacklist import blocklist as blacklisted_domains
@@ -361,7 +361,7 @@ class ForwardHandler:
         Returns:
             True if listed in common DNSBL, False otherwise.
         """
-        dnsbl = DNSBLChecker()
+        dnsbl = DNSBLChecker(providers=[providers.ZenSpamhaus()])
         try:
             result: DNSBLResult = await dnsbl._check_ip(addr=ip)
         except ValueError:

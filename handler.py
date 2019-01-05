@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import asyncio
+import re
 from collections import ChainMap
 from logging import Logger, getLogger
 from typing import Dict, List, Optional, Set
@@ -37,10 +38,6 @@ class ForwardHandler:
     """
     Handler for inbound messages that proxies messages to configurable destionations.
     """
-
-    FORWARDING_ADDRESSES: Dict[str, Set[str]] = {
-        "sharks-with-lasers.net": {"mail:mjonuschat@gmail.com|morton@jonuschat.de"}
-    }
 
     SANITIZE_HEADER_FIELDS = ["dkim-signature", "x-google-dkim-signature"]
 
@@ -461,7 +458,7 @@ class ForwardHandler:
 
         return domain.relative
 
-    @cached(TTLCache(maxsize=1024, ttl=300))
+    @cached(TTLCache(maxsize=1024, ttl=3600))
     async def _get_forwarding_addresses(self, rcpt: EmailAddress) -> Set[EmailAddress]:
         """
         Get the forwarding addresses for the recipient of the message.
@@ -472,15 +469,21 @@ class ForwardHandler:
         Returns:
             A set of new recipient addresses
         """
-        # TODO: Make this configurable through text records?
         orig_domain = await self._parse_domain(rcpt=rcpt)
         orig_mailbox = await self._parse_mailbox(rcpt=rcpt)
         orig_filter = await self._parse_filter(rcpt=rcpt)
 
-        addresses = self.FORWARDING_ADDRESSES.get(orig_domain)
-
         global_forwarding_addresses: Set[EmailAddress] = set()
         forwarding_addresses: Set[EmailAddress] = set()
+
+        resolver = DNSResolver(loop=self.loop)
+        records = [
+            r.text.decode("utf-8")[len("forward-email=") :]
+            for r in await resolver.query(orig_domain, "TXT")
+            if r.text.startswith(b"forward-email=")
+        ]
+        raw_addresses = re.sub(r",+", ",", ",".join(records)).strip()
+        addresses = {a.strip() for a in raw_addresses.split(",")}
 
         if not addresses:
             raise SMTPResponseException(code=550, message="Mailbox not available")

@@ -91,7 +91,6 @@ class ForwardHandler:
 
         is_blacklisted = await self._check_dnsbl(ip=session.peer[0])
         if is_blacklisted:
-            self.log.debug("%s is listed in one or more DNSBL", session.peer[0])
             return f"550 {session.peer[0]} is not welcome here"
 
         session.host_name = fqdn.relative
@@ -369,7 +368,11 @@ class ForwardHandler:
             self.log.exception("Error checking DNSBL for %s", ip)
             result = DNSBLResult(addr=ip, results=[])
 
-        self.log.info("DNSBL result for %s: %s", ip, result)
+        if result.blacklisted:
+            self.log.debug(
+                "%s is listed in one or more DNSBL: %s", ip, result.detected_by
+            )
+
         return result.blacklisted and ip not in ["127.0.0.1", "::1"]
 
     async def _get_mx_records(self, domain: str) -> List[str]:

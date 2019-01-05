@@ -47,5 +47,4 @@ class SMTP(smtp.SMTP):
             timeout=timeout,
             loop=loop,
         )
-        if loop is not None and self.event_handler:
-            self.event_handler.loop = loop
+        self.event_handler.loop = self.loop
